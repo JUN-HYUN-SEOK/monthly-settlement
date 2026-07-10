@@ -29,6 +29,11 @@ def load_json_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
+    try:
+        if 'CONFIG_JSON' in st.secrets:
+            return json.loads(st.secrets['CONFIG_JSON'])
+    except Exception:
+        pass
     return DEFAULT_CONFIG.copy()
 
 
