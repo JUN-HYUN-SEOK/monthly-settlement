@@ -1,0 +1,18 @@
+# 데이터 파일 (민감 정보)
+*.xls
+*.xlsx
+*.xlsm
+~$*
+
+# 설정 파일 (로컬 전용)
+config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# IDE
+.vscode/
+.idea/
