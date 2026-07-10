@@ -13,6 +13,7 @@ import re
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 
 DEFAULT_CONFIG = {
+    "dispatch_keywords": ["외주용역비", "파견비용청구"],
     "import2": [
         ["(주)영화케이스틸", "수입", ""],
         ["에스엠월드와이드코리아(주)", "수입", "에스케이텔링크(주)"],
@@ -202,10 +203,19 @@ def process_data(file, config):
 
     # --- Cascading Priority Filtering ---
 
-    # 0순위: 매출원가 (최우선 — 과목명 일치 시 무조건 매출원가)
+    # 0순위: 파견비용 (B/L No에 키워드 포함)
+    dispatch_keywords = config.get('dispatch_keywords', ['외주용역비', '파견비용청구'])
+    if 'B/L No' in df.columns:
+        dispatch_pattern = '|'.join(dispatch_keywords)
+        df_dispatch = df[df['B/L No'].astype(str).str.contains(dispatch_pattern, na=False)]
+    else:
+        df_dispatch = pd.DataFrame(columns=df.columns)
+    df_rem = df[~df.index.isin(df_dispatch.index)]
+
+    # 1순위: 매출원가 (과목명 일치 시 무조건 매출원가)
     cost_of_sales_categories = [str(c).strip() for c in config.get('cost_categories', [])]
-    df_cost_of_sales = df[df['과목명'].isin(cost_of_sales_categories)]
-    df_rem = df[~df.index.isin(df_cost_of_sales.index)]
+    df_cost_of_sales = df_rem[df_rem['과목명'].isin(cost_of_sales_categories)]
+    df_rem = df_rem[~df_rem.index.isin(df_cost_of_sales.index)]
 
     # 1순위: 컨설팅
     consulting_tasks = [str(t).strip() for t in config.get('consulting_tasks', ['기타'])]
@@ -265,10 +275,10 @@ def process_data(file, config):
     df_export = pd.concat([df_export_by_task, df_export_spec]).drop_duplicates()
     df_rem = df_rem[~df_rem.index.isin(df_export.index)]
 
-    # 5순위: 수입1팀 (나머지)
+    # 6순위: 수입1팀 (나머지)
     df_import_team1 = df_rem
 
-    return df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1
+    return df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1
 
 
 def create_summary(df, condition_column=None, condition_value=None, group_cols=None):
@@ -310,28 +320,29 @@ def create_full_summary(df, group_cols=None):
     return summary
 
 
-def create_validation_sheet(df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1):
+def create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1):
     validation_data = {
-        '구분': ['원본 데이터', '컨설팅', '수입3팀', '매출원가', '수출팀', '수입2팀', '수입1팀', '합계', '차이'],
+        '구분': ['원본 데이터', '파견비용', '매출원가', '컨설팅', '수입3팀', '수출팀', '수입2팀', '수입1팀', '합계', '차이'],
         '공급가': [
             df['공급가'].sum(),
+            df_dispatch['공급가'].sum(),
+            df_cost_of_sales['공급가'].sum(),
             df_consulting['공급가'].sum(),
             df_income_team3['공급가'].sum(),
-            df_cost_of_sales['공급가'].sum(),
             df_export['공급가'].sum(),
             df_income_team2['공급가'].sum(),
             df_import_team1['공급가'].sum(),
             0, 0
         ],
         '건수': [
-            len(df), len(df_consulting), len(df_income_team3), len(df_cost_of_sales),
-            len(df_export), len(df_income_team2), len(df_import_team1), 0, 0
+            len(df), len(df_dispatch), len(df_cost_of_sales), len(df_consulting),
+            len(df_income_team3), len(df_export), len(df_income_team2), len(df_import_team1), 0, 0
         ]
     }
 
     df_validation = pd.DataFrame(validation_data)
-    sum_supply = df_validation.iloc[1:7]['공급가'].sum()
-    sum_count = df_validation.iloc[1:7]['건수'].sum()
+    sum_supply = df_validation.iloc[1:8]['공급가'].sum()
+    sum_count = df_validation.iloc[1:8]['건수'].sum()
 
     df_validation.loc[df_validation['구분'] == '합계', '공급가'] = sum_supply
     df_validation.loc[df_validation['구분'] == '합계', '건수'] = sum_count
@@ -341,7 +352,7 @@ def create_validation_sheet(df, df_consulting, df_income_team3, df_income_team2,
     return df_validation
 
 
-def to_excel(df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config):
+def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config):
     output = io.BytesIO()
 
     def add_total_row(dataframe):
@@ -356,6 +367,7 @@ def to_excel(df, df_consulting, df_income_team3, df_income_team2, df_export, df_
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='원본', index=False)
+        add_total_row(df_dispatch).to_excel(writer, sheet_name='파견비용', index=False)
         add_total_row(df_consulting).to_excel(writer, sheet_name='컨설팅', index=False)
         add_total_row(df_income_team3).to_excel(writer, sheet_name='수입3팀', index=False)
         add_total_row(df_income_team2).to_excel(writer, sheet_name='수입2팀', index=False)
@@ -369,7 +381,7 @@ def to_excel(df, df_consulting, df_income_team3, df_income_team2, df_export, df_
         create_summary(df_export).to_excel(writer, sheet_name='수출 Summary', index=False)
         create_summary(df_import_team1, '과목명', '통관수수료').to_excel(writer, sheet_name='수입1팀 Summary', index=False)
 
-        df_validation = create_validation_sheet(df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
+        df_validation = create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
         df_validation.to_excel(writer, sheet_name='검증', index=False)
 
         accounting_format = '#,##0'
@@ -943,15 +955,16 @@ with st.sidebar:
     st.header("설정 관리")
 
     st.markdown("""
-    **분류 우선순위** (매출원가 과목은 항상 최우선)
+    **분류 우선순위**
     | 순위 | 부서 | 기준 |
     |:---:|------|------|
-    | 0 | **매출원가** | 과목명 일치 시 무조건 |
-    | 1 | 컨설팅 | 업무 일치 |
-    | 2 | 수입3팀 | 받는자 일치 |
-    | 3 | 수입2팀 | 받는자+업무+실화주 |
-    | 4 | 수출팀 | 업무 or 특정업체 |
-    | 5 | 수입1팀 | 나머지 전부 |
+    | 0 | **파견비용** | B/L No 키워드 |
+    | 1 | **매출원가** | 과목명 일치 |
+    | 2 | 컨설팅 | 업무 일치 |
+    | 3 | 수입3팀 | 받는자 일치 |
+    | 4 | 수입2팀 | 받는자+업무+실화주 |
+    | 5 | 수출팀 | 업무 or 특정업체 |
+    | 6 | 수입1팀 | 나머지 전부 |
     """)
     st.divider()
 
@@ -959,6 +972,17 @@ with st.sidebar:
 
     with config_tab1:
         st.caption("설정을 직접 편집하고 저장합니다.")
+
+        with st.expander("파견비용 B/L 키워드", expanded=False):
+            dispatch_text = st.text_area(
+                "키워드 (줄바꿈으로 구분)",
+                value="\n".join(st.session_state.config.get('dispatch_keywords', ['외주용역비', '파견비용청구'])),
+                height=80,
+                key="dispatch_editor"
+            )
+            st.session_state.config['dispatch_keywords'] = [
+                x.strip() for x in dispatch_text.split('\n') if x.strip()
+            ]
 
         with st.expander("매출원가 과목명", expanded=False):
             cost_text = st.text_area(
@@ -1083,7 +1107,7 @@ if uploaded_file:
         with st.spinner('처리 중...'):
             result = process_data(uploaded_file, config)
             if result:
-                df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1 = result
+                df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1 = result
 
                 st.markdown("---")
                 st.subheader("처리 결과")
@@ -1091,8 +1115,9 @@ if uploaded_file:
                 def fmt_money(val):
                     return f"{int(val):,}"
 
-                cols = st.columns(6)
+                cols = st.columns(7)
                 teams_info = [
+                    ("파견비용", df_dispatch),
                     ("컨설팅", df_consulting),
                     ("수입3팀", df_income_team3),
                     ("수입2팀", df_income_team2),
@@ -1104,7 +1129,7 @@ if uploaded_file:
                     col.metric(name, f"{len(team_df)}건", f"{fmt_money(team_df['공급가'].sum())}원")
 
                 with st.expander("데이터 검증 (원본 vs 합계 비교)"):
-                    df_val = create_validation_sheet(df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
+                    df_val = create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
                     diff = df_val[df_val['구분'] == '차이']['공급가'].values[0]
                     if diff == 0:
                         st.success("원본과 분류 합계가 정확히 일치합니다.")
@@ -1123,7 +1148,7 @@ if uploaded_file:
                 col_dl1, col_dl2 = st.columns(2)
 
                 with col_dl1:
-                    excel_data = to_excel(df, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config)
+                    excel_data = to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config)
                     st.download_button(
                         label="엑셀 파일 다운로드",
                         data=excel_data,
