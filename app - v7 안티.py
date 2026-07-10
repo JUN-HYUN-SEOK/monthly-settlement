@@ -19,7 +19,9 @@ DEFAULT_CONFIG = {
     "export_companies": [],
     "cost_categories": [],
     "import3_receivers": [],
-    "consulting_tasks": []
+    "consulting_tasks": [],
+    "export_to_import3_registrars": [],
+    "export_to_import2_registrars": []
 }
 
 
@@ -257,6 +259,20 @@ def process_data(file, config):
 
     df_export = pd.concat([df_export_by_task, df_export_spec]).drop_duplicates()
     df_rem = df_rem[~df_rem.index.isin(df_export.index)]
+
+    # 4-1순위: 수출팀 내 등록자 기반 재분류
+    export_to_i3 = config.get('export_to_import3_registrars', [])
+    export_to_i2 = config.get('export_to_import2_registrars', [])
+
+    if export_to_i3 and '등록자' in df_export.columns:
+        mask_to_i3 = df_export['등록자'].isin(export_to_i3)
+        df_income_team3 = pd.concat([df_income_team3, df_export[mask_to_i3]]).drop_duplicates()
+        df_export = df_export[~mask_to_i3]
+
+    if export_to_i2 and '등록자' in df_export.columns:
+        mask_to_i2 = df_export['등록자'].isin(export_to_i2)
+        df_income_team2 = pd.concat([df_income_team2, df_export[mask_to_i2]]).drop_duplicates()
+        df_export = df_export[~mask_to_i2]
 
     # 6순위: 수입1팀 (나머지)
     df_import_team1 = df_rem
@@ -947,6 +963,8 @@ with st.sidebar:
     | 3 | 수입3팀 | 받는자 일치 |
     | 4 | 수입2팀 | 받는자+업무+실화주 |
     | 5 | 수출팀 | 업무 or 특정업체 |
+    | 5-1 | 수출→수입3 | 등록자 재분류 |
+    | 5-2 | 수출→수입2 | 등록자 재분류 |
     | 6 | 수입1팀 | 나머지 전부 |
     """)
     st.divider()
@@ -1036,6 +1054,28 @@ with st.sidebar:
             result_ec = edited_ec.fillna('').values.tolist()
             st.session_state.config['export_companies'] = [
                 r for r in result_ec if r[0].strip()
+            ]
+
+        with st.expander("수출팀→수입3팀 등록자", expanded=False):
+            ei3_text = st.text_area(
+                "등록자 (줄바꿈으로 구분)",
+                value="\n".join(st.session_state.config.get('export_to_import3_registrars', [])),
+                height=80,
+                key="ei3_editor"
+            )
+            st.session_state.config['export_to_import3_registrars'] = [
+                x.strip() for x in ei3_text.split('\n') if x.strip()
+            ]
+
+        with st.expander("수출팀→수입2팀 등록자", expanded=False):
+            ei2_text = st.text_area(
+                "등록자 (줄바꿈으로 구분)",
+                value="\n".join(st.session_state.config.get('export_to_import2_registrars', [])),
+                height=80,
+                key="ei2_editor"
+            )
+            st.session_state.config['export_to_import2_registrars'] = [
+                x.strip() for x in ei2_text.split('\n') if x.strip()
             ]
 
         if st.button("설정 저장", type="primary", use_container_width=True):
