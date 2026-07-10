@@ -13,34 +13,13 @@ import re
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 
 DEFAULT_CONFIG = {
-    "dispatch_keywords": ["외주용역비", "파견비용청구"],
-    "import2": [
-        ["(주)영화케이스틸", "수입", ""],
-        ["에스엠월드와이드코리아(주)", "수입", "에스케이텔링크(주)"],
-        ["큐리옥스바이오시스템즈(주)", "수출", "큐리옥스바이오시스템즈(주)"],
-        ["(주)코리아인터링크-", "수출", ""],
-        ["록키매니지먼트(주)-", "수출", ""],
-        ["(주)피엔케이트레이딩", "수입", ""],
-        ["(주)경일하이텍", "수입", ""],
-        ["주식회사 엑트로지스틱스", "수입", ""],
-        ["(주)에스더블유더블유로지스", "수출", ""],
-        ["(주)노바미디어", "수입", ""],
-        ["세미크론댄포스(주)", "수입", ""],
-        ["벤시스에너지코리아 주식회사", "수입", ""],
-        ["벤시스에너지코리아 주식회사", "수출", ""],
-        ["벤시스에너지코리아 주식회사", "기타", ""],
-        ["벤시스에너지코리아 주식회사", "품목분류검토 수수료", ""]
-    ],
-    "export_tasks": ["수출", "갈음", "환급"],
+    "dispatch_keywords": [],
+    "import2": [],
+    "export_tasks": [],
     "export_companies": [],
-    "cost_categories": [
-        "운송료", "경과보관료", "적출료", "창고료", "검역검사수수료",
-        "H/C", "컨테이너적출료", "보세운송료", "작업료", "검역수수료",
-        "보수작업료", "컨테이너 검사료", "검사수수료", "폐기물처리비용",
-        "대행수수료", "기타수수료"
-    ],
-    "import3_receivers": ["삼성바이오로직스주식회사"],
-    "consulting_tasks": ["기타"]
+    "cost_categories": [],
+    "import3_receivers": [],
+    "consulting_tasks": []
 }
 
 
@@ -49,6 +28,10 @@ def load_json_config():
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
     return DEFAULT_CONFIG.copy()
+
+
+def is_config_empty(config):
+    return all(len(v) == 0 for v in config.values() if isinstance(v, list))
 
 
 def save_json_config(config):
@@ -1095,6 +1078,9 @@ config = st.session_state.config
 st.title("부서별 월정산 구분 시스템")
 st.caption("원본 데이터를 업로드하면 사이드바 설정 기준으로 부서별 매출을 자동 분류합니다.")
 st.markdown("---")
+
+if is_config_empty(config):
+    st.warning("⚠️ 설정이 비어있습니다. 사이드바에서 직접 입력하거나 엑셀 설정 파일을 가져와주세요.")
 
 uploaded_file = st.file_uploader(
     "원본 데이터 파일 업로드 (.xlsx / .xls)",
