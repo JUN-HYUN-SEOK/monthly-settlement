@@ -468,14 +468,14 @@ def display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export
                 col1, col2 = st.columns([2, 1])
                 with col1:
                     fig = make_chart(summary_df)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 with col2:
                     st.markdown("**상세 데이터 (상위 20)**")
                     formatted_df = summary_df.head(20).copy()
                     st.dataframe(
                         formatted_df.style.format({"매출액": "{:,.0f}"}),
                         hide_index=True,
-                        use_container_width=True
+                        width="stretch"
                     )
             else:
                 st.info("데이터가 없습니다.")
@@ -1040,7 +1040,7 @@ with st.sidebar:
             edited_i2 = st.data_editor(
                 df_i2,
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 key="i2_editor"
             )
             st.session_state.config['import2'] = edited_i2.fillna('').values.tolist()
@@ -1053,7 +1053,7 @@ with st.sidebar:
             edited_ec = st.data_editor(
                 df_ec,
                 num_rows="dynamic",
-                use_container_width=True,
+                width="stretch",
                 key="ec_editor"
             )
             result_ec = edited_ec.fillna('').values.tolist()
@@ -1083,12 +1083,12 @@ with st.sidebar:
                 x.strip() for x in ei2_text.split('\n') if x.strip()
             ]
 
-        if st.button("설정 저장", type="primary", use_container_width=True):
+        if st.button("설정 저장", type="primary", width="stretch"):
             save_json_config(st.session_state.config)
             st.success("저장 완료!")
 
         st.divider()
-        if st.button("기본값으로 초기화", use_container_width=True):
+        if st.button("기본값으로 초기화", width="stretch"):
             st.session_state.config = DEFAULT_CONFIG.copy()
             save_json_config(st.session_state.config)
             st.success("초기화 완료!")
@@ -1134,7 +1134,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
-    if st.button("데이터 처리 시작", type="primary", use_container_width=True):
+    if st.button("데이터 처리 시작", type="primary", width="stretch"):
         with st.spinner('처리 중...'):
             result = process_data(uploaded_file, config)
             if result:
@@ -1169,7 +1169,7 @@ if uploaded_file:
                     st.dataframe(
                         df_val.style.format({"공급가": "{:,.0f}", "건수": "{:.0f}"}),
                         hide_index=True,
-                        use_container_width=True
+                        width="stretch"
                     )
 
                 summaries = display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export, df_import_team1, config)
@@ -1185,7 +1185,7 @@ if uploaded_file:
                         data=excel_data,
                         file_name=f"월정산_결과_{uploaded_file.name}",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        width="stretch"
                     )
 
                 with col_dl2:
@@ -1195,7 +1195,7 @@ if uploaded_file:
                         data=html_report,
                         file_name=f"월정산_보고서_{uploaded_file.name.split('.')[0]}.html",
                         mime="text/html",
-                        use_container_width=True
+                        width="stretch"
                     )
 
 else:
