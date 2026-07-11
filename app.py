@@ -482,32 +482,69 @@ def display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export
     return summaries
 
 
-def generate_summary_text(summaries):
+def generate_insights(summaries):
     if not summaries:
-        return "데이터가 없습니다."
+        return {"overall": "데이터가 없습니다.", "teams": {}}
 
-    team_performance = []
+    team_stats = []
     for team, df in summaries.items():
-        total_revenue = df['매출액'].sum() if not df.empty else 0
-        team_performance.append({'team': team, 'revenue': total_revenue})
+        if df.empty:
+            team_stats.append({'team': team, 'revenue': 0, 'companies': 0, 'count': 0, 'top_company': '-', 'top_revenue': 0, 'avg_per_deal': 0})
+            continue
+        total = df['매출액'].sum()
+        top = df.groupby('받는자')['매출액'].sum()
+        top_company = top.idxmax() if not top.empty else '-'
+        top_rev = top.max() if not top.empty else 0
+        team_stats.append({
+            'team': team, 'revenue': total,
+            'companies': df['받는자'].nunique(), 'count': len(df),
+            'top_company': top_company, 'top_revenue': top_rev,
+            'avg_per_deal': total / len(df) if len(df) > 0 else 0
+        })
 
-    team_performance.sort(key=lambda x: x['revenue'], reverse=True)
-    top_team = team_performance[0]
-    total_all = sum(item['revenue'] for item in team_performance)
+    team_stats.sort(key=lambda x: x['revenue'], reverse=True)
+    total_all = sum(s['revenue'] for s in team_stats)
+    active_teams = [s for s in team_stats if s['revenue'] > 0]
 
-    summary = f"이번 달 총 매출액은 {total_all:,.0f}원이며, "
-    summary += f"가장 높은 매출을 기록한 부서는 {top_team['team']} ({top_team['revenue']:,.0f}원)입니다."
+    overall_parts = []
+    overall_parts.append(f"이번 달 총 매출액은 {total_all:,.0f}원이며, {len(active_teams)}개 부서에서 매출이 발생했습니다.")
 
-    if len(team_performance) > 1:
-        second_team = team_performance[1]
-        pct = (second_team['revenue'] / total_all * 100) if total_all else 0
-        summary += f" {second_team['team']}가 {pct:.1f}% 비중으로 뒤를 잇고 있습니다."
+    if active_teams:
+        top = active_teams[0]
+        top_pct = (top['revenue'] / total_all * 100) if total_all else 0
+        overall_parts.append(f"최대 매출 부서는 {top['team']}으로 전체의 {top_pct:.1f}%({top['revenue']:,.0f}원)를 차지합니다.")
 
-    return summary
+    if len(active_teams) >= 3:
+        top3_rev = sum(s['revenue'] for s in active_teams[:3])
+        top3_pct = (top3_rev / total_all * 100) if total_all else 0
+        top3_names = ', '.join(s['team'] for s in active_teams[:3])
+        overall_parts.append(f"상위 3개 부서({top3_names})가 전체 매출의 {top3_pct:.1f}%를 점유하고 있습니다.")
+
+    avg_per_deal_all = total_all / sum(s['count'] for s in active_teams) if active_teams else 0
+    overall_parts.append(f"건당 평균 매출액은 {avg_per_deal_all:,.0f}원입니다.")
+
+    team_insights = {}
+    for s in team_stats:
+        if s['revenue'] == 0:
+            team_insights[s['team']] = "해당 기간 매출 없음."
+            continue
+        pct = (s['revenue'] / total_all * 100) if total_all else 0
+        top_pct = (s['top_revenue'] / s['revenue'] * 100) if s['revenue'] else 0
+        parts = []
+        parts.append(f"전체 매출의 {pct:.1f}% 차지. {s['companies']}개 업체, {s['count']}건 처리.")
+        parts.append(f"최대 거래처: {s['top_company']} ({s['top_revenue']:,.0f}원, 부서 내 {top_pct:.1f}%).")
+        parts.append(f"건당 평균 {s['avg_per_deal']:,.0f}원.")
+        if top_pct > 50:
+            parts.append(f"⚠ {s['top_company']} 매출 집중도 높음 — 리스크 분산 검토 필요.")
+        if s['companies'] == 1:
+            parts.append("⚠ 단일 거래처 의존 구조.")
+        team_insights[s['team']] = ' '.join(parts)
+
+    return {"overall": ' '.join(overall_parts), "teams": team_insights}
 
 
 def to_html(summaries, config):
-    summary_text = generate_summary_text(summaries)
+    insights = generate_insights(summaries)
     charts_json = {}
     tables_data = {}
     team_totals = {}
@@ -518,29 +555,32 @@ def to_html(summaries, config):
             top_10 = chart_df.sort_values('매출액', ascending=False).head(10).sort_values('매출액', ascending=True)
             top_10 = top_10.copy()
             top_10['매출액_텍스트'] = top_10['매출액'].apply(lambda x: f"{x:,.0f}")
+            top_10['받는자_short'] = top_10['받는자'].apply(lambda x: x[:12] + '…' if len(str(x)) > 14 else x)
 
             colors = ['#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff',
                       '#7c3aed', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe']
 
-            fig = px.bar(top_10, x='매출액', y='받는자', orientation='h',
+            fig = px.bar(top_10, x='매출액', y='받는자_short', orientation='h',
                          text='매출액_텍스트',
-                         labels={'매출액': '매출액(원)', '받는자': ''},
-                         template='plotly_white')
+                         labels={'매출액': '매출액(원)', '받는자_short': ''},
+                         template='plotly_white',
+                         custom_data=['받는자'])
             fig.update_traces(
                 marker_color=colors[:len(top_10)],
                 textposition='outside',
                 cliponaxis=False,
-                textfont=dict(size=12, color='#1e293b'),
-                hovertemplate='<b>%{y}</b><br>매출액: %{text}원<extra></extra>'
+                textfont=dict(size=11, color='#1e293b'),
+                hovertemplate='<b>%{customdata[0]}</b><br>매출액: %{text}원<extra></extra>'
             )
             fig.update_layout(
-                margin=dict(l=10, r=130, t=10, b=10),
-                height=400,
+                margin=dict(l=10, r=150, t=10, b=10),
+                height=max(300, len(top_10) * 42),
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 xaxis=dict(showgrid=True, gridcolor='#f1f5f9', zeroline=False, showticklabels=False),
-                yaxis=dict(showgrid=False, tickfont=dict(size=12)),
-                showlegend=False
+                yaxis=dict(showgrid=False, tickfont=dict(size=11)),
+                showlegend=False,
+                bargap=0.3
             )
             charts_json[team] = fig.to_json()
             tables_data[team] = df.to_dict('records')
@@ -674,30 +714,58 @@ def to_html(summaries, config):
             .kpi .value { font-size: 22px; font-weight: 800; color: var(--primary); font-variant-numeric: tabular-nums; }
             .kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 
-            /* ── 요약 카드 ── */
+            /* ── 인사이트 카드 ── */
+            .insight-section {
+                margin-bottom: 32px;
+            }
+            .insight-section-title {
+                font-size: 16px;
+                font-weight: 700;
+                color: var(--primary);
+                margin-bottom: 16px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
             .insight {
                 background: var(--card);
                 border-radius: var(--radius);
-                padding: 24px 28px;
-                margin-bottom: 32px;
+                padding: 22px 26px;
+                margin-bottom: 14px;
                 box-shadow: var(--shadow-sm);
                 border: 1px solid var(--border-light);
                 border-left: 4px solid var(--accent);
                 display: flex;
-                gap: 16px;
+                gap: 14px;
                 align-items: flex-start;
             }
+            .insight.overall {
+                border-left-color: var(--green);
+                background: linear-gradient(135deg, #f0fdf4 0%, #ffffff 100%);
+            }
+            .insight.warning { border-left-color: var(--amber); }
             .insight-icon {
-                width: 40px; height: 40px;
+                width: 36px; height: 36px;
                 background: var(--accent-bg);
                 border-radius: 10px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 18px;
+                font-size: 16px;
                 flex-shrink: 0;
             }
-            .insight p { color: var(--text-sub); font-size: 14px; line-height: 1.8; }
+            .insight.overall .insight-icon { background: var(--green-bg); }
+            .insight .team-tag {
+                display: inline-block;
+                background: var(--accent-bg);
+                color: var(--accent);
+                font-size: 11px;
+                font-weight: 700;
+                padding: 2px 10px;
+                border-radius: 12px;
+                margin-bottom: 6px;
+            }
+            .insight p { color: var(--text-sub); font-size: 13px; line-height: 1.8; }
 
             /* ── 팀 카드 ── */
             .team-card {
@@ -850,9 +918,25 @@ def to_html(summaries, config):
             {% endfor %}
         </div>
 
-        <div class="insight">
-            <div class="insight-icon">💡</div>
-            <div><p>{{ summary_text }}</p></div>
+        <div class="insight-section">
+            <div class="insight-section-title">📊 종합 인사이트</div>
+            <div class="insight overall">
+                <div class="insight-icon">📈</div>
+                <div><p>{{ insights.overall }}</p></div>
+            </div>
+        </div>
+
+        <div class="insight-section">
+            <div class="insight-section-title">🏢 부서별 인사이트</div>
+            {% for team, text in insights.teams.items() %}
+            <div class="insight {% if '⚠' in text %}warning{% endif %}">
+                <div class="insight-icon">{{ icons_map.get(team, '📋') }}</div>
+                <div>
+                    <div class="team-tag">{{ team }}</div>
+                    <p>{{ text }}</p>
+                </div>
+            </div>
+            {% endfor %}
         </div>
 
         {% set icons = {'수입3팀':'3', '수입2팀':'2', '수출팀':'Ex', '수입1팀':'1', '컨설팅':'C'} %}
@@ -877,6 +961,11 @@ def to_html(summaries, config):
                 </div>
             </div>
             <div class="team-body">
+                {% if insights.teams.get(team) %}
+                <div style="background:var(--accent-bg);border-radius:var(--radius-sm);padding:14px 18px;margin-bottom:20px;font-size:13px;color:var(--text-sub);line-height:1.7;">
+                    💡 {{ insights.teams[team] }}
+                </div>
+                {% endif %}
                 <div class="chart-wrap" id="chart-{{ loop.index }}"></div>
                 <div class="tbl-label">상세 내역</div>
                 <table id="table-{{ loop.index }}" class="display" style="width:100%">
@@ -937,11 +1026,14 @@ def to_html(summaries, config):
     </html>
     """
 
+    icons_map = {'수입3팀':'📦', '수입2팀':'📦', '수출팀':'🚢', '수입1팀':'📦', '컨설팅':'💼'}
+
     template = Template(html_template)
     return template.render(
         current_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         current_year=datetime.now().year,
-        summary_text=summary_text,
+        insights=insights,
+        icons_map=icons_map,
         charts_json=charts_json,
         tables_data=tables_data,
         team_totals=team_totals
