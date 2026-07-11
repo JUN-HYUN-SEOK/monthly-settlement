@@ -814,8 +814,6 @@ def to_html(summaries, config):
 
             .team-body { padding: 28px; }
 
-            .chart-wrap { margin-bottom: 24px; overflow: visible; }
-
             .tbl-label {
                 font-size: 14px;
                 font-weight: 700;
@@ -872,21 +870,97 @@ def to_html(summaries, config):
             .foot { text-align: center; padding: 36px 0 24px; color: var(--text-muted); font-size: 12px; }
             .foot .brand { font-weight: 700; color: var(--primary); }
 
-            /* ── 반응형 ── */
-            @media (max-width: 768px) {
-                .page { padding: 16px 12px; }
-                .hero { padding: 36px 24px 30px; border-radius: 14px; }
-                .hero h1 { font-size: 24px; }
-                .hero .stamp { position: static; display: inline-block; margin-top: 14px; }
-                .kpi-row { grid-template-columns: repeat(2, 1fr); }
-                .team-stats { grid-template-columns: 1fr; }
-                .team-stat { border-right: none; border-bottom: 1px solid var(--border-light); }
-                .team-body { padding: 20px 16px; }
-                .insight { flex-direction: column; gap: 10px; }
+            /* ── 테이블 래퍼 (가로 스크롤) ── */
+            .table-wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                margin: 0 -4px;
+                padding: 0 4px;
             }
+
+            /* ── 차트 래퍼 ── */
+            .chart-wrap {
+                overflow: visible;
+                margin-bottom: 24px;
+                min-height: 200px;
+            }
+
+            /* ── 반응형: 태블릿 ── */
+            @media (max-width: 768px) {
+                .page { padding: 16px 10px; }
+                .hero { padding: 32px 20px 28px; border-radius: 14px; }
+                .hero h1 { font-size: 22px; }
+                .hero .tagline { font-size: 13px; }
+                .hero .stamp { position: static; display: inline-block; margin-top: 12px; font-size: 11px; }
+                .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+                .kpi { padding: 16px 14px; }
+                .kpi .value { font-size: 18px; }
+                .kpi .label { font-size: 11px; }
+                .kpi .sub { font-size: 10px; }
+                .team-stats { grid-template-columns: 1fr; }
+                .team-stat { border-right: none; border-bottom: 1px solid var(--border-light); padding: 12px 18px; }
+                .team-stat .stat-value { font-size: 16px; }
+                .team-body { padding: 18px 14px; }
+                .team-head { padding: 14px 18px; }
+                .team-head .title { font-size: 16px; }
+                .insight { flex-direction: column; gap: 8px; padding: 18px 16px; }
+                .insight p { font-size: 12px; line-height: 1.7; }
+                .insight-section-title { font-size: 14px; }
+                table.dataTable { font-size: 12px !important; }
+                table.dataTable thead th { padding: 8px 10px !important; font-size: 11px !important; white-space: nowrap; }
+                table.dataTable tbody td { padding: 7px 10px !important; }
+                .dataTables_wrapper .dataTables_filter input { width: 120px; font-size: 12px; }
+                .dataTables_wrapper .dataTables_length select { font-size: 12px; }
+                .tbl-label { font-size: 13px; }
+            }
+
+            /* ── 반응형: 모바일 ── */
             @media (max-width: 480px) {
-                .kpi-row { grid-template-columns: 1fr; }
-                .hero h1 { font-size: 20px; }
+                .page { padding: 12px 8px; }
+                .hero { padding: 28px 16px 24px; border-radius: 12px; }
+                .hero h1 { font-size: 19px; letter-spacing: -0.5px; }
+                .hero .tagline { font-size: 12px; }
+                .kpi-row { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+                .kpi { padding: 14px 10px; }
+                .kpi .value { font-size: 15px; }
+                .kpi .label { font-size: 10px; }
+                .kpi .sub { font-size: 9px; }
+                .team-card { margin-bottom: 20px; border-radius: 10px; }
+                .team-head { padding: 12px 14px; gap: 10px; }
+                .team-head .icon { width: 32px; height: 32px; font-size: 13px; }
+                .team-head .title { font-size: 15px; }
+                .team-stats { grid-template-columns: repeat(3, 1fr); }
+                .team-stat { padding: 10px 8px; }
+                .team-stat .stat-label { font-size: 9px; }
+                .team-stat .stat-value { font-size: 14px; }
+                .team-body { padding: 14px 10px; }
+                .insight { padding: 14px 12px; margin-bottom: 10px; }
+                .insight p { font-size: 11px; line-height: 1.6; }
+                .insight-icon { width: 30px; height: 30px; font-size: 14px; }
+                .insight .team-tag { font-size: 10px; padding: 1px 8px; }
+                .insight-section { margin-bottom: 24px; }
+                .insight-section-title { font-size: 13px; margin-bottom: 10px; }
+                table.dataTable { font-size: 11px !important; }
+                table.dataTable thead th { padding: 6px 6px !important; font-size: 10px !important; }
+                table.dataTable tbody td { padding: 6px 6px !important; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                td.amt { font-size: 11px; }
+                .dataTables_wrapper .dataTables_filter,
+                .dataTables_wrapper .dataTables_length { font-size: 11px; margin-bottom: 8px; }
+                .dataTables_wrapper .dataTables_filter input { width: 100px; font-size: 11px; padding: 4px 8px; }
+                .dataTables_wrapper .dataTables_info { font-size: 10px; }
+                .dataTables_wrapper .dataTables_paginate .paginate_button { padding: 4px 8px !important; font-size: 11px; }
+                .tbl-label { font-size: 12px; margin-bottom: 10px; }
+                .foot { padding: 24px 0 16px; font-size: 11px; }
+            }
+
+            /* ── 반응형: 초소형 모바일 ── */
+            @media (max-width: 360px) {
+                .hero h1 { font-size: 17px; }
+                .kpi-row { grid-template-columns: 1fr 1fr; gap: 6px; }
+                .kpi .value { font-size: 14px; }
+                .team-stats { grid-template-columns: 1fr; }
+                .team-stat { border-right: none; }
+                table.dataTable tbody td { max-width: 90px; font-size: 10px !important; }
             }
 
             /* ── 인쇄 ── */
@@ -968,6 +1042,7 @@ def to_html(summaries, config):
                 {% endif %}
                 <div class="chart-wrap" id="chart-{{ loop.index }}"></div>
                 <div class="tbl-label">상세 내역</div>
+                <div class="table-wrap">
                 <table id="table-{{ loop.index }}" class="display" style="width:100%">
                     <thead>
                         <tr>
@@ -988,6 +1063,7 @@ def to_html(summaries, config):
                         {% endfor %}
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
         {% endfor %}
