@@ -165,8 +165,10 @@ def process_data(file, config):
         return None
 
     for col in ['업무', '받는자', '실화주', '과목명', '등록자']:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
+        if col not in df.columns:
+            df[col] = ''
+            st.warning(f"원본에 '{col}' 컬럼이 없어 빈 값으로 처리합니다.")
+        df[col] = df[col].astype(str).str.strip()
 
     def clean_numeric(val):
         if pd.isna(val) or str(val).strip() == '':
@@ -194,9 +196,9 @@ def process_data(file, config):
     # --- Cascading Priority Filtering ---
 
     # 0순위: 파견비용 (B/L No에 키워드 포함)
-    dispatch_keywords = config.get('dispatch_keywords', ['외주용역비', '파견비용청구'])
-    if 'B/L No' in df.columns:
-        dispatch_pattern = '|'.join(dispatch_keywords)
+    dispatch_keywords = [str(k).strip() for k in config.get('dispatch_keywords', ['외주용역비', '파견비용청구']) if str(k).strip()]
+    if dispatch_keywords and 'B/L No' in df.columns:
+        dispatch_pattern = '|'.join(re.escape(k) for k in dispatch_keywords)
         df_dispatch = df[df['B/L No'].astype(str).str.contains(dispatch_pattern, na=False)]
     else:
         df_dispatch = pd.DataFrame(columns=df.columns)
@@ -230,8 +232,10 @@ def process_data(file, config):
             f = df_rem[(df_rem['받는자'] == r) & (df_rem['업무'] == b)]
         filtered_dfs_i2.append(f)
 
+    filtered_dfs_i2 = [d for d in filtered_dfs_i2 if not d.empty]
     if filtered_dfs_i2:
-        df_income_team2 = pd.concat(filtered_dfs_i2).drop_duplicates()
+        df_income_team2 = pd.concat(filtered_dfs_i2)
+        df_income_team2 = df_income_team2[~df_income_team2.index.duplicated(keep='first')]
     else:
         df_income_team2 = pd.DataFrame(columns=df.columns)
     df_rem = df_rem[~df_rem.index.isin(df_income_team2.index)]
@@ -240,7 +244,7 @@ def process_data(file, config):
     export_companies = config.get('export_companies', [])
     export_tasks = config.get('export_tasks', ['수출', '갈음', '환급'])
 
-    task_pattern = '|'.join([str(t).strip() for t in export_tasks if t])
+    task_pattern = '|'.join(re.escape(str(t).strip()) for t in export_tasks if str(t).strip())
     if task_pattern:
         mask_export_task = df_rem['업무'].str.contains(task_pattern, na=False)
         df_export_by_task = df_rem[mask_export_task]
@@ -255,14 +259,15 @@ def process_data(file, config):
         tasks = [str(t).strip() for t in row[1:] if str(t).strip()]
         if tasks:
             filtered = df_rem[(df_rem['받는자'] == rcv) & (df_rem['업무'].isin(tasks))]
-            export_company_dfs.append(filtered)
+            if not filtered.empty:
+                export_company_dfs.append(filtered)
 
-    if export_company_dfs:
-        df_export_spec = pd.concat(export_company_dfs)
+    export_parts = [d for d in [df_export_by_task] + export_company_dfs if not d.empty]
+    if export_parts:
+        df_export = pd.concat(export_parts)
+        df_export = df_export[~df_export.index.duplicated(keep='first')]
     else:
-        df_export_spec = pd.DataFrame(columns=df.columns)
-
-    df_export = pd.concat([df_export_by_task, df_export_spec]).drop_duplicates()
+        df_export = pd.DataFrame(columns=df.columns)
     df_rem = df_rem[~df_rem.index.isin(df_export.index)]
 
     # 4-1순위: 수출팀 내 등록자 기반 재분류
@@ -271,13 +276,19 @@ def process_data(file, config):
 
     if export_to_i3 and '등록자' in df_export.columns:
         mask_to_i3 = df_export['등록자'].isin(export_to_i3)
-        df_income_team3 = pd.concat([df_income_team3, df_export[mask_to_i3]]).drop_duplicates()
-        df_export = df_export[~mask_to_i3]
+        if mask_to_i3.any():
+            parts = [d for d in (df_income_team3, df_export[mask_to_i3]) if not d.empty]
+            df_income_team3 = pd.concat(parts)
+            df_income_team3 = df_income_team3[~df_income_team3.index.duplicated(keep='first')]
+            df_export = df_export[~mask_to_i3]
 
     if export_to_i2 and '등록자' in df_export.columns:
         mask_to_i2 = df_export['등록자'].isin(export_to_i2)
-        df_income_team2 = pd.concat([df_income_team2, df_export[mask_to_i2]]).drop_duplicates()
-        df_export = df_export[~mask_to_i2]
+        if mask_to_i2.any():
+            parts = [d for d in (df_income_team2, df_export[mask_to_i2]) if not d.empty]
+            df_income_team2 = pd.concat(parts)
+            df_income_team2 = df_income_team2[~df_income_team2.index.duplicated(keep='first')]
+            df_export = df_export[~mask_to_i2]
 
     # 6순위: 수입1팀 (나머지)
     df_import_team1 = df_rem
@@ -365,9 +376,11 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
         df_copy = dataframe.copy()
         total = df_copy['공급가'].sum()
         total_row = pd.DataFrame({col: [''] for col in df_copy.columns})
+        first_col = df_copy.columns[0]
+        if first_col != '공급가':
+            total_row[first_col] = ['합계']
         total_row['공급가'] = [total]
-        total_row.index = ['합계']
-        return pd.concat([total_row, df_copy], ignore_index=False)
+        return pd.concat([total_row, df_copy], ignore_index=True)
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='원본', index=False)
@@ -390,17 +403,56 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
 
         accounting_format = '#,##0'
         yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        total_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
         gulim_font = Font(name='굴림', size=9)
+        gulim_bold = Font(name='굴림', size=9, bold=True)
+        red_bold = Font(name='굴림', size=9, bold=True, color='FF0000')
+
+        total_row_sheets = {'파견비용', '컨설팅', '수입3팀', '수입2팀', '수출', '매출원가', '수입1팀'}
+
+        def cell_width(value):
+            # 한글/한자 2칸 폭 근사
+            return sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(value))
 
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
+
+            col_widths = {}
             for row in ws.iter_rows():
                 for cell in row:
                     cell.font = gulim_font
+                    if cell.value is not None and str(cell.value) != '':
+                        w = cell_width(cell.value)
+                        if w > col_widths.get(cell.column_letter, 0):
+                            col_widths[cell.column_letter] = w
+            for letter, w in col_widths.items():
+                ws.column_dimensions[letter].width = min(max(w + 2, 8), 45)
+
+            ws.freeze_panes = 'A2'
 
             if sheet_name != '검증':
                 for cell in ws[1]:
                     cell.fill = yellow_fill
+                    cell.font = gulim_bold
+                if ws.max_row > 1:
+                    ws.auto_filter.ref = ws.dimensions
+
+            if sheet_name in total_row_sheets and ws.max_row >= 2:
+                for cell in ws[2]:
+                    cell.font = gulim_bold
+                    cell.fill = total_fill
+
+            if sheet_name == '검증':
+                for row in ws.iter_rows(min_row=2):
+                    if row[0].value == '차이':
+                        try:
+                            diff_val = float(row[1].value or 0)
+                        except (TypeError, ValueError):
+                            diff_val = 0
+                        if abs(diff_val) >= 0.5:
+                            for cell in row:
+                                cell.font = red_bold
+
             for col in ws.iter_cols():
                 if col[0].value in ['공급가', '매출액']:
                     for cell in col[1:]:
@@ -543,13 +595,19 @@ def generate_insights(summaries):
     return {"overall": ' '.join(overall_parts), "teams": team_insights}
 
 
-def to_html(summaries, config):
+def to_html(summaries, config, extra_summaries=None):
+    # summaries: 매출 부서 5개 (인사이트·도넛·총합 기준)
+    # extra_summaries: 파견비용·매출원가 등 참고 섹션 (총합·비중 계산에서 제외)
     insights = generate_insights(summaries)
+    all_summaries = dict(summaries)
+    if extra_summaries:
+        all_summaries.update(extra_summaries)
+
     charts_json = {}
     tables_data = {}
     team_totals = {}
 
-    for team, df in summaries.items():
+    for team, df in all_summaries.items():
         if not df.empty:
             chart_df = df.groupby('받는자', as_index=False)['매출액'].sum()
             top_10 = chart_df.sort_values('매출액', ascending=False).head(10).sort_values('매출액', ascending=True)
@@ -593,6 +651,37 @@ def to_html(summaries, config):
             charts_json[team] = "{}"
             tables_data[team] = []
             team_totals[team] = {'revenue': 0, 'companies': 0, 'count': 0}
+
+    # 총합 KPI (매출 부서만)
+    revenue_teams = [t for t in summaries.keys()]
+    total_kpi = {
+        'revenue': sum(team_totals[t]['revenue'] for t in revenue_teams),
+        'count': sum(team_totals[t]['count'] for t in revenue_teams),
+        'teams': sum(1 for t in revenue_teams if team_totals[t]['revenue'] > 0),
+    }
+
+    # 부서별 매출 비중 도넛 (매출 부서만)
+    donut_rows = [(t, team_totals[t]['revenue']) for t in revenue_teams if team_totals[t]['revenue'] > 0]
+    if donut_rows:
+        donut_df = pd.DataFrame(donut_rows, columns=['부서', '매출액'])
+        donut_colors = ['#1e3a8a', '#4f46e5', '#7c3aed', '#0891b2', '#059669', '#d97706']
+        fig_d = px.pie(donut_df, names='부서', values='매출액', hole=0.55)
+        fig_d.update_traces(
+            marker=dict(colors=donut_colors[:len(donut_df)]),
+            textinfo='label+percent',
+            textfont=dict(size=12),
+            hovertemplate='<b>%{label}</b><br>매출액: %{value:,.0f}원<br>비중: %{percent}<extra></extra>'
+        )
+        fig_d.update_layout(
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=340,
+            showlegend=True,
+            legend=dict(orientation='v', font=dict(size=12)),
+            paper_bgcolor='rgba(0,0,0,0)'
+        )
+        donut_json = fig_d.to_json()
+    else:
+        donut_json = "{}"
 
     html_template = """
     <!DOCTYPE html>
@@ -713,6 +802,20 @@ def to_html(summaries, config):
             .kpi .label { font-size: 12px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
             .kpi .value { font-size: 22px; font-weight: 800; color: var(--primary); font-variant-numeric: tabular-nums; }
             .kpi .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+            .kpi.total {
+                border: 2px solid var(--accent);
+                background: linear-gradient(135deg, var(--accent-bg) 0%, #ffffff 100%);
+            }
+            .kpi.total .value { color: var(--accent); }
+
+            /* ── 도넛 차트 카드 ── */
+            .donut-card {
+                background: var(--card);
+                border-radius: var(--radius);
+                padding: 20px;
+                box-shadow: var(--shadow-sm);
+                border: 1px solid var(--border-light);
+            }
 
             /* ── 인사이트 카드 ── */
             .insight-section {
@@ -983,6 +1086,11 @@ def to_html(summaries, config):
         </div>
 
         <div class="kpi-row">
+            <div class="kpi total">
+                <div class="label">전체 매출</div>
+                <div class="value">{{ "{:,.0f}".format(total_kpi.revenue) }}</div>
+                <div class="sub">{{ total_kpi.teams }}개 부서 &middot; {{ total_kpi.count }}건</div>
+            </div>
             {% for team, info in team_totals.items() %}
             <div class="kpi">
                 <div class="label">{{ team }}</div>
@@ -1001,6 +1109,13 @@ def to_html(summaries, config):
         </div>
 
         <div class="insight-section">
+            <div class="insight-section-title">🍩 부서별 매출 비중</div>
+            <div class="donut-card">
+                <div id="donut-chart"></div>
+            </div>
+        </div>
+
+        <div class="insight-section">
             <div class="insight-section-title">🏢 부서별 인사이트</div>
             {% for team, text in insights.teams.items() %}
             <div class="insight {% if '⚠' in text %}warning{% endif %}">
@@ -1013,7 +1128,7 @@ def to_html(summaries, config):
             {% endfor %}
         </div>
 
-        {% set icons = {'수입3팀':'3', '수입2팀':'2', '수출팀':'Ex', '수입1팀':'1', '컨설팅':'C'} %}
+        {% set icons = {'수입3팀':'3', '수입2팀':'2', '수출팀':'Ex', '수입1팀':'1', '컨설팅':'C', '파견비용':'파', '매출원가':'원'} %}
         {% for team, chart_json in charts_json.items() %}
         <div class="team-card {% if loop.index > 1 %}page-break{% endif %}">
             <div class="team-head">
@@ -1076,6 +1191,15 @@ def to_html(summaries, config):
 
     <script>
     $(document).ready(function() {
+        (function() {
+            var donut = {{ donut_json | safe }};
+            if (donut && donut.data) {
+                donut.layout.autosize = true;
+                donut.layout.font = {family: 'Noto Sans KR, sans-serif'};
+                Plotly.newPlot('donut-chart', donut.data, donut.layout, {responsive: true, displayModeBar: false});
+            }
+        })();
+
         {% for team, chart_json in charts_json.items() %}
         (function() {
             var d = {{ chart_json | safe }};
@@ -1102,7 +1226,7 @@ def to_html(summaries, config):
     </html>
     """
 
-    icons_map = {'수입3팀':'📦', '수입2팀':'📦', '수출팀':'🚢', '수입1팀':'📦', '컨설팅':'💼'}
+    icons_map = {'수입3팀':'📦', '수입2팀':'📦', '수출팀':'🚢', '수입1팀':'📦', '컨설팅':'💼', '파견비용':'🚚', '매출원가':'🧾'}
 
     template = Template(html_template)
     return template.render(
@@ -1112,7 +1236,9 @@ def to_html(summaries, config):
         icons_map=icons_map,
         charts_json=charts_json,
         tables_data=tables_data,
-        team_totals=team_totals
+        team_totals=team_totals,
+        total_kpi=total_kpi,
+        donut_json=donut_json
     )
 
 
@@ -1224,7 +1350,7 @@ with st.sidebar:
                 width="stretch",
                 key="ec_editor"
             )
-            result_ec = edited_ec.fillna('').values.tolist()
+            result_ec = edited_ec.fillna('').astype(str).values.tolist()
             st.session_state.config['export_companies'] = [
                 r for r in result_ec if r[0].strip()
             ]
@@ -1272,8 +1398,10 @@ with st.sidebar:
         if uploaded_config:
             imported = load_config(uploaded_config)
             if imported:
-                st.session_state.config = imported
-                save_json_config(imported)
+                # 엑셀에 없는 키(파견 키워드, 등록자 재분류 등)는 기존 설정 유지
+                merged = {**DEFAULT_CONFIG, **st.session_state.config, **imported}
+                st.session_state.config = merged
+                save_json_config(merged)
                 st.success("엑셀 설정을 가져와 저장했습니다!")
                 st.rerun()
 
@@ -1342,66 +1470,78 @@ if uploaded_file:
     if st.button("데이터 처리 시작", type="primary", width="stretch"):
         with st.spinner('처리 중...'):
             result = process_data(uploaded_file, config)
-            if result:
-                df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1 = result
+            if result is not None:
+                st.session_state.result = result
+                st.session_state.result_file_name = uploaded_file.name
 
-                st.markdown("---")
-                st.subheader("처리 결과")
+    # 결과를 session_state에 보관 — 다운로드 버튼 클릭(rerun) 후에도 화면 유지
+    if st.session_state.get('result') is not None and st.session_state.get('result_file_name') == uploaded_file.name:
+        df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1 = st.session_state.result
 
-                def fmt_money(val):
-                    return f"{int(val):,}"
+        st.markdown("---")
+        st.subheader("처리 결과")
 
-                cols = st.columns(7)
-                teams_info = [
-                    ("파견비용", df_dispatch),
-                    ("컨설팅", df_consulting),
-                    ("수입3팀", df_income_team3),
-                    ("수입2팀", df_income_team2),
-                    ("수출팀", df_export),
-                    ("매출원가", df_cost_of_sales),
-                    ("수입1팀", df_import_team1),
-                ]
-                for col, (name, team_df) in zip(cols, teams_info):
-                    col.metric(name, f"{len(team_df)}건", f"{fmt_money(team_df['공급가'].sum())}원")
+        def fmt_money(val):
+            return f"{int(val):,}"
 
-                with st.expander("데이터 검증 (원본 vs 합계 비교)"):
-                    df_val = create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
-                    diff = df_val[df_val['구분'] == '차이']['공급가'].values[0]
-                    if diff == 0:
-                        st.success("원본과 분류 합계가 정확히 일치합니다.")
-                    else:
-                        st.warning(f"차이 발생: {diff:,.0f}원")
-                    st.dataframe(
-                        df_val.style.format({"공급가": "{:,.0f}", "건수": "{:.0f}"}),
-                        hide_index=True,
-                        width="stretch"
-                    )
+        cols = st.columns(7)
+        teams_info = [
+            ("파견비용", df_dispatch),
+            ("컨설팅", df_consulting),
+            ("수입3팀", df_income_team3),
+            ("수입2팀", df_income_team2),
+            ("수출팀", df_export),
+            ("매출원가", df_cost_of_sales),
+            ("수입1팀", df_import_team1),
+        ]
+        for col, (name, team_df) in zip(cols, teams_info):
+            col.metric(name, f"{len(team_df)}건", f"{fmt_money(team_df['공급가'].sum())}원")
 
-                summaries = display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export, df_import_team1, config)
+        with st.expander("데이터 검증 (원본 vs 합계 비교)"):
+            df_val = create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
+            diff = df_val[df_val['구분'] == '차이']['공급가'].values[0]
+            if abs(diff) < 0.5:
+                st.success("원본과 분류 합계가 정확히 일치합니다.")
+            else:
+                st.warning(f"차이 발생: {diff:,.0f}원")
+            st.dataframe(
+                df_val.style.format({"공급가": "{:,.0f}", "건수": "{:.0f}"}),
+                hide_index=True,
+                width="stretch"
+            )
 
-                st.markdown("---")
-                st.subheader("결과 다운로드")
-                col_dl1, col_dl2 = st.columns(2)
+        summaries = display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export, df_import_team1, config)
 
-                with col_dl1:
-                    excel_data = to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config)
-                    st.download_button(
-                        label="엑셀 파일 다운로드",
-                        data=excel_data,
-                        file_name=f"월정산_결과_{uploaded_file.name}",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        width="stretch"
-                    )
+        st.markdown("---")
+        st.subheader("결과 다운로드")
+        col_dl1, col_dl2 = st.columns(2)
 
-                with col_dl2:
-                    html_report = to_html(summaries, config)
-                    st.download_button(
-                        label="HTML 보고서 다운로드",
-                        data=html_report,
-                        file_name=f"월정산_보고서_{uploaded_file.name.split('.')[0]}.html",
-                        mime="text/html",
-                        width="stretch"
-                    )
+        base_name = os.path.splitext(uploaded_file.name)[0]
+
+        with col_dl1:
+            excel_data = to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config)
+            st.download_button(
+                label="엑셀 파일 다운로드",
+                data=excel_data,
+                file_name=f"월정산_결과_{base_name}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch"
+            )
+
+        with col_dl2:
+            report_cols = ['받는자', '과목명', '업무']
+            extra_summaries = {
+                '파견비용': create_full_summary(df_dispatch, group_cols=report_cols),
+                '매출원가': create_full_summary(df_cost_of_sales, group_cols=report_cols),
+            }
+            html_report = to_html(summaries, config, extra_summaries=extra_summaries)
+            st.download_button(
+                label="HTML 보고서 다운로드",
+                data=html_report,
+                file_name=f"월정산_보고서_{base_name}.html",
+                mime="text/html",
+                width="stretch"
+            )
 
 else:
     st.info("원본 데이터 파일을 업로드해주세요. 설정은 좌측 사이드바에서 관리합니다.")
