@@ -46,6 +46,17 @@ def save_json_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+# 사이드바 편집 위젯 key 목록 — 설정을 외부에서 갈아끼울 때 위젯 상태를 리셋해야
+# text_area/data_editor의 이전 값이 새 설정을 덮어쓰지 않는다
+EDITOR_KEYS = ['dispatch_editor', 'cost_editor', 'i3_editor', 'cons_editor',
+               'exp_editor', 'i2_editor', 'ec_editor', 'ei3_editor', 'ei2_editor']
+
+
+def reset_editor_widgets():
+    for k in EDITOR_KEYS:
+        st.session_state.pop(k, None)
+
+
 st.set_page_config(page_title="부서별 월정산 구분 시스템", layout="wide")
 
 st.markdown("""
@@ -175,11 +186,15 @@ def process_data(file, config):
             return 0
         if isinstance(val, (int, float)):
             return float(val)
-        cleaned = re.sub(r'[^0-9.\-]', '', str(val))
+        s = str(val).strip()
+        # 회계식 음수 표기 (1,234) 지원
+        is_paren_negative = s.startswith('(') and s.endswith(')')
+        cleaned = re.sub(r'[^0-9.\-]', '', s)
         try:
-            return float(cleaned) if cleaned else 0
+            num = float(cleaned) if cleaned else 0
         except ValueError:
             return 0
+        return -abs(num) if is_paren_negative else num
 
     if '공급가' in df.columns:
         df['공급가'] = df['공급가'].apply(clean_numeric)
@@ -201,6 +216,8 @@ def process_data(file, config):
         dispatch_pattern = '|'.join(re.escape(k) for k in dispatch_keywords)
         df_dispatch = df[df['B/L No'].astype(str).str.contains(dispatch_pattern, na=False)]
     else:
+        if dispatch_keywords and 'B/L No' not in df.columns:
+            st.warning("원본에 'B/L No' 컬럼이 없어 파견비용 분류를 건너뜁니다.")
         df_dispatch = pd.DataFrame(columns=df.columns)
     df_rem = df[~df.index.isin(df_dispatch.index)]
 
@@ -297,11 +314,12 @@ def process_data(file, config):
 
 
 def create_summary(df, condition_column=None, condition_value=None, group_cols=None):
+    """반환: (summary, fallback) — fallback=True면 필터 결과가 없어 팀 전체 기준으로 집계됨."""
     if group_cols is None:
         group_cols = ['받는자', '업무']
 
     if df.empty:
-        return pd.DataFrame(columns=group_cols + ['매출액'])
+        return pd.DataFrame(columns=group_cols + ['매출액']), False
 
     if condition_column is None:
         filtered_data = df
@@ -312,13 +330,15 @@ def create_summary(df, condition_column=None, condition_value=None, group_cols=N
         val = str(condition_value).strip()
         filtered_data = df[df[condition_column] == val]
 
+    fallback = False
     if filtered_data.empty and not df.empty:
         filtered_data = df
+        fallback = True
 
     summary = filtered_data.groupby(group_cols, as_index=False)['공급가'].sum()
     summary.rename(columns={'공급가': '매출액'}, inplace=True)
     summary = summary.sort_values(by='매출액', ascending=False).reset_index(drop=True)
-    return summary
+    return summary, fallback
 
 
 def create_full_summary(df, group_cols=None):
@@ -370,33 +390,45 @@ def create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_
 def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config):
     output = io.BytesIO()
 
-    def add_total_row(dataframe):
-        if dataframe.empty:
-            return dataframe
-        df_copy = dataframe.copy()
-        total = df_copy['공급가'].sum()
-        total_row = pd.DataFrame({col: [''] for col in df_copy.columns})
-        first_col = df_copy.columns[0]
-        if first_col != '공급가':
-            total_row[first_col] = ['합계']
-        total_row['공급가'] = [total]
-        return pd.concat([total_row, df_copy], ignore_index=True)
-
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='원본', index=False)
-        add_total_row(df_dispatch).to_excel(writer, sheet_name='파견비용', index=False)
-        add_total_row(df_consulting).to_excel(writer, sheet_name='컨설팅', index=False)
-        add_total_row(df_income_team3).to_excel(writer, sheet_name='수입3팀', index=False)
-        add_total_row(df_income_team2).to_excel(writer, sheet_name='수입2팀', index=False)
-        add_total_row(df_export).to_excel(writer, sheet_name='수출', index=False)
-        add_total_row(df_cost_of_sales).to_excel(writer, sheet_name='매출원가', index=False)
-        add_total_row(df_import_team1).to_excel(writer, sheet_name='수입1팀', index=False)
 
-        create_summary(df_consulting, '업무', config.get('consulting_tasks', ['기타'])).to_excel(writer, sheet_name='컨설팅 Summary', index=False)
-        create_summary(df_income_team3, '과목명', '통관수수료').to_excel(writer, sheet_name='수입3팀 Summary', index=False)
-        create_summary(df_income_team2, '과목명', '통관수수료').to_excel(writer, sheet_name='수입2팀 Summary', index=False)
-        create_summary(df_export).to_excel(writer, sheet_name='수출 Summary', index=False)
-        create_summary(df_import_team1, '과목명', '통관수수료').to_excel(writer, sheet_name='수입1팀 Summary', index=False)
+        # 합계는 1행에 별도 기록, 데이터 헤더는 2행부터 — 자동필터 범위에서 합계 제외
+        total_sheets = {}  # sheet_name -> (합계, 공급가 컬럼 번호)
+
+        def write_team_sheet(team_df, sheet_name):
+            if team_df.empty:
+                team_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                return
+            team_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
+            total_sheets[sheet_name] = (
+                team_df['공급가'].sum(),
+                list(team_df.columns).index('공급가') + 1,
+            )
+
+        write_team_sheet(df_dispatch, '파견비용')
+        write_team_sheet(df_consulting, '컨설팅')
+        write_team_sheet(df_income_team3, '수입3팀')
+        write_team_sheet(df_income_team2, '수입2팀')
+        write_team_sheet(df_export, '수출')
+        write_team_sheet(df_cost_of_sales, '매출원가')
+        write_team_sheet(df_import_team1, '수입1팀')
+
+        def write_summary_sheet(team_df, sheet_name, cond_col=None, cond_val=None, filter_desc=None):
+            summary, fallback = create_summary(team_df, cond_col, cond_val)
+            if filter_desc and not summary.empty:
+                note = (f"※ {filter_desc} 항목 없음 — 팀 전체 기준 집계" if fallback
+                        else f"※ {filter_desc} 기준 집계")
+                note_row = pd.DataFrame({col: [''] for col in summary.columns})
+                note_row[summary.columns[0]] = [note]
+                summary = pd.concat([note_row, summary], ignore_index=True)
+            summary.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        write_summary_sheet(df_consulting, '컨설팅 Summary', '업무', config.get('consulting_tasks', ['기타']), '컨설팅 업무')
+        write_summary_sheet(df_income_team3, '수입3팀 Summary', '과목명', '통관수수료', '통관수수료')
+        write_summary_sheet(df_income_team2, '수입2팀 Summary', '과목명', '통관수수료', '통관수수료')
+        write_summary_sheet(df_export, '수출 Summary')
+        write_summary_sheet(df_import_team1, '수입1팀 Summary', '과목명', '통관수수료', '통관수수료')
 
         df_validation = create_validation_sheet(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1)
         df_validation.to_excel(writer, sheet_name='검증', index=False)
@@ -408,14 +440,20 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
         gulim_bold = Font(name='굴림', size=9, bold=True)
         red_bold = Font(name='굴림', size=9, bold=True, color='FF0000')
 
-        total_row_sheets = {'파견비용', '컨설팅', '수입3팀', '수입2팀', '수출', '매출원가', '수입1팀'}
-
         def cell_width(value):
             # 한글/한자 2칸 폭 근사
             return sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(value))
 
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
+            has_total = sheet_name in total_sheets
+            header_row = 2 if has_total else 1
+
+            if has_total:
+                total_val, supply_col = total_sheets[sheet_name]
+                if supply_col != 1:
+                    ws.cell(row=1, column=1, value='합계')
+                ws.cell(row=1, column=supply_col, value=total_val)
 
             col_widths = {}
             for row in ws.iter_rows():
@@ -428,19 +466,20 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
             for letter, w in col_widths.items():
                 ws.column_dimensions[letter].width = min(max(w + 2, 8), 45)
 
-            ws.freeze_panes = 'A2'
+            ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
 
-            if sheet_name != '검증':
+            if has_total:
                 for cell in ws[1]:
-                    cell.fill = yellow_fill
-                    cell.font = gulim_bold
-                if ws.max_row > 1:
-                    ws.auto_filter.ref = ws.dimensions
-
-            if sheet_name in total_row_sheets and ws.max_row >= 2:
-                for cell in ws[2]:
                     cell.font = gulim_bold
                     cell.fill = total_fill
+
+            if sheet_name != '검증':
+                for cell in ws[header_row]:
+                    cell.fill = yellow_fill
+                    cell.font = gulim_bold
+                if ws.max_row > header_row:
+                    last_col = ws.cell(row=header_row, column=ws.max_column).column_letter
+                    ws.auto_filter.ref = f"A{header_row}:{last_col}{ws.max_row}"
 
             if sheet_name == '검증':
                 for row in ws.iter_rows(min_row=2):
@@ -453,10 +492,11 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
                             for cell in row:
                                 cell.font = red_bold
 
-            for col in ws.iter_cols():
-                if col[0].value in ['공급가', '매출액']:
-                    for cell in col[1:]:
-                        cell.number_format = accounting_format
+            for idx in range(1, ws.max_column + 1):
+                if ws.cell(row=header_row, column=idx).value in ('공급가', '매출액'):
+                    for r in range(1, ws.max_row + 1):
+                        if r != header_row:
+                            ws.cell(row=r, column=idx).number_format = accounting_format
 
     return output.getvalue()
 
@@ -515,7 +555,7 @@ def display_dashboard(df_consulting, df_income_team3, df_income_team2, df_export
                 c1, c2, c3 = st.columns(3)
                 c1.metric("총 매출액", f"{total_revenue:,.0f}원")
                 c2.metric("업체 수", f"{company_count}개사")
-                c3.metric("건수", f"{len(summary_df)}건")
+                c3.metric("항목 수", f"{len(summary_df)}개")
 
                 col1, col2 = st.columns([2, 1])
                 with col1:
@@ -573,7 +613,7 @@ def generate_insights(summaries):
         overall_parts.append(f"상위 3개 부서({top3_names})가 전체 매출의 {top3_pct:.1f}%를 점유하고 있습니다.")
 
     avg_per_deal_all = total_all / sum(s['count'] for s in active_teams) if active_teams else 0
-    overall_parts.append(f"건당 평균 매출액은 {avg_per_deal_all:,.0f}원입니다.")
+    overall_parts.append(f"집계 항목당 평균 매출액은 {avg_per_deal_all:,.0f}원입니다.")
 
     team_insights = {}
     for s in team_stats:
@@ -583,9 +623,9 @@ def generate_insights(summaries):
         pct = (s['revenue'] / total_all * 100) if total_all else 0
         top_pct = (s['top_revenue'] / s['revenue'] * 100) if s['revenue'] else 0
         parts = []
-        parts.append(f"전체 매출의 {pct:.1f}% 차지. {s['companies']}개 업체, {s['count']}건 처리.")
+        parts.append(f"전체 매출의 {pct:.1f}% 차지. {s['companies']}개 업체, {s['count']}개 집계 항목.")
         parts.append(f"최대 거래처: {s['top_company']} ({s['top_revenue']:,.0f}원, 부서 내 {top_pct:.1f}%).")
-        parts.append(f"건당 평균 {s['avg_per_deal']:,.0f}원.")
+        parts.append(f"항목당 평균 {s['avg_per_deal']:,.0f}원.")
         if top_pct > 50:
             parts.append(f"⚠ {s['top_company']} 매출 집중도 높음 — 리스크 분산 검토 필요.")
         if s['companies'] == 1:
@@ -1089,13 +1129,13 @@ def to_html(summaries, config, extra_summaries=None):
             <div class="kpi total">
                 <div class="label">전체 매출</div>
                 <div class="value">{{ "{:,.0f}".format(total_kpi.revenue) }}</div>
-                <div class="sub">{{ total_kpi.teams }}개 부서 &middot; {{ total_kpi.count }}건</div>
+                <div class="sub">{{ total_kpi.teams }}개 부서 &middot; {{ total_kpi.count }}개 항목</div>
             </div>
             {% for team, info in team_totals.items() %}
             <div class="kpi">
                 <div class="label">{{ team }}</div>
                 <div class="value">{{ "{:,.0f}".format(info.revenue) }}</div>
-                <div class="sub">{{ info.companies }}개사 &middot; {{ info.count }}건</div>
+                <div class="sub">{{ info.companies }}개사 &middot; {{ info.count }}개 항목</div>
             </div>
             {% endfor %}
         </div>
@@ -1145,7 +1185,7 @@ def to_html(summaries, config, extra_summaries=None):
                     <div class="stat-value">{{ team_totals[team].companies }}</div>
                 </div>
                 <div class="team-stat">
-                    <div class="stat-label">건수</div>
+                    <div class="stat-label">항목 수</div>
                     <div class="stat-value">{{ team_totals[team].count }}</div>
                 </div>
             </div>
@@ -1228,7 +1268,7 @@ def to_html(summaries, config, extra_summaries=None):
 
     icons_map = {'수입3팀':'📦', '수입2팀':'📦', '수출팀':'🚢', '수입1팀':'📦', '컨설팅':'💼', '파견비용':'🚚', '매출원가':'🧾'}
 
-    template = Template(html_template)
+    template = Template(html_template, autoescape=True)
     return template.render(
         current_date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         current_year=datetime.now().year,
@@ -1381,10 +1421,20 @@ with st.sidebar:
             save_json_config(st.session_state.config)
             st.success("저장 완료!")
 
+        st.caption("⚠️ 클라우드 배포에서는 앱이 재시작되면 저장한 설정이 초기화될 수 있습니다. 아래 버튼으로 JSON 백업을 받아두세요.")
+        st.download_button(
+            "설정 JSON 백업 다운로드",
+            data=json.dumps(st.session_state.config, ensure_ascii=False, indent=2),
+            file_name=f"월정산_설정백업_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            width="stretch"
+        )
+
         st.divider()
         if st.button("기본값으로 초기화", width="stretch"):
             st.session_state.config = DEFAULT_CONFIG.copy()
             save_json_config(st.session_state.config)
+            reset_editor_widgets()
             st.success("초기화 완료!")
             st.rerun()
 
@@ -1396,14 +1446,43 @@ with st.sidebar:
             key="config_uploader"
         )
         if uploaded_config:
-            imported = load_config(uploaded_config)
-            if imported:
-                # 엑셀에 없는 키(파견 키워드, 등록자 재분류 등)는 기존 설정 유지
-                merged = {**DEFAULT_CONFIG, **st.session_state.config, **imported}
-                st.session_state.config = merged
-                save_json_config(merged)
-                st.success("엑셀 설정을 가져와 저장했습니다!")
-                st.rerun()
+            # 같은 파일 재처리로 인한 무한 rerun 방지
+            file_id = f"{uploaded_config.name}-{uploaded_config.size}"
+            if st.session_state.get('last_imported_config') != file_id:
+                imported = load_config(uploaded_config)
+                if imported:
+                    # 엑셀에 없는 키(파견 키워드, 등록자 재분류 등)는 기존 설정 유지
+                    merged = {**DEFAULT_CONFIG, **st.session_state.config, **imported}
+                    st.session_state.config = merged
+                    save_json_config(merged)
+                    st.session_state['last_imported_config'] = file_id
+                    reset_editor_widgets()
+                    st.success("엑셀 설정을 가져와 저장했습니다!")
+                    st.rerun()
+
+        st.divider()
+        st.caption("JSON 백업 파일로 설정을 복원합니다.")
+        uploaded_json = st.file_uploader(
+            "설정 JSON 복원 (.json)",
+            type=['json'],
+            key="json_uploader"
+        )
+        if uploaded_json:
+            json_id = f"{uploaded_json.name}-{uploaded_json.size}"
+            if st.session_state.get('last_restored_json') != json_id:
+                try:
+                    restored = json.load(uploaded_json)
+                    if not isinstance(restored, dict):
+                        raise ValueError("JSON 최상위가 객체(dict)가 아닙니다.")
+                    merged = {**DEFAULT_CONFIG, **restored}
+                    st.session_state.config = merged
+                    save_json_config(merged)
+                    st.session_state['last_restored_json'] = json_id
+                    reset_editor_widgets()
+                    st.success("JSON 설정을 복원했습니다!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"JSON 파일을 읽을 수 없습니다: {e}")
 
     st.divider()
     with st.expander("현재 설정 (JSON)"):
