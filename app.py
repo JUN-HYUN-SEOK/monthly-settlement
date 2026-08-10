@@ -464,6 +464,16 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
         # 열너비는 상위 행 샘플로 충분 — 수천 행 전체를 재면 과도하게 느려짐
         WIDTH_SCAN_ROWS = 300
 
+        # 통합문서 기본 폰트를 굴림 9pt로 교체.
+        # 셀마다 font를 대입하면 수만~수십만 회 스타일 갱신이 일어나 매우 느리다.
+        # 기본 폰트를 바꾸면 별도 서식을 주지 않은 모든 셀이 이를 따르므로 순회가 사라진다.
+        # openpyxl 내부 구조(_fonts)에 의존하므로, 실패하면 종전의 셀별 지정으로 되돌린다.
+        try:
+            writer.book._fonts[0] = gulim_font
+            default_font_ok = True
+        except Exception:
+            default_font_ok = False
+
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
             has_total = sheet_name in total_sheets
@@ -475,12 +485,15 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
                     ws.cell(row=1, column=1, value='합계')
                 ws.cell(row=1, column=supply_col, value=total_val)
 
+            if not default_font_ok:
+                for row in ws.iter_rows():
+                    for cell in row:
+                        cell.font = gulim_font
+
             col_widths = {}
-            for r_idx, row in enumerate(ws.iter_rows(), start=1):
-                scan_width = r_idx <= WIDTH_SCAN_ROWS
+            for row in ws.iter_rows(max_row=min(WIDTH_SCAN_ROWS, ws.max_row)):
                 for cell in row:
-                    cell.font = gulim_font
-                    if scan_width and cell.value is not None:
+                    if cell.value is not None:
                         text = str(cell.value)
                         if text:
                             w = cell_width(text)
@@ -515,11 +528,13 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
                             for cell in row:
                                 cell.font = red_bold
 
-            for idx in range(1, ws.max_column + 1):
-                if ws.cell(row=header_row, column=idx).value in ('공급가', '매출액'):
-                    for r in range(1, ws.max_row + 1):
-                        if r != header_row:
-                            ws.cell(row=r, column=idx).number_format = accounting_format
+            money_cols = [idx for idx in range(1, ws.max_column + 1)
+                          if ws.cell(row=header_row, column=idx).value in ('공급가', '매출액')]
+            for idx in money_cols:
+                for row in ws.iter_rows(min_col=idx, max_col=idx):
+                    cell = row[0]
+                    if cell.row != header_row:
+                        cell.number_format = accounting_format
 
     return output.getvalue()
 
@@ -1575,6 +1590,8 @@ if uploaded_file:
             if result is not None:
                 st.session_state.result = result
                 st.session_state.result_file_name = uploaded_file.name
+                # 처리할 때마다 증가 — 산출물 캐시를 무효화하는 기준
+                st.session_state.result_token = st.session_state.get('result_token', 0) + 1
 
     # 결과를 session_state에 보관 — 다운로드 버튼 클릭(rerun) 후에도 화면 유지
     if st.session_state.get('result') is not None and st.session_state.get('result_file_name') == uploaded_file.name:
@@ -1620,26 +1637,41 @@ if uploaded_file:
 
         base_name = os.path.splitext(uploaded_file.name)[0]
 
+        # 산출물은 처리 결과당 한 번만 생성해 캐시한다.
+        # st.download_button은 data를 미리 요구하므로, 캐시가 없으면 화면을 건드릴 때마다
+        # (탭 전환·사이드바 편집·다운로드 클릭) 수십 초짜리 엑셀 생성이 되풀이된다.
+        token = st.session_state.get('result_token')
+        cache = st.session_state.get('artifacts')
+
+        if cache is None or cache.get('token') != token:
+            with st.spinner('보고서 파일 생성 중... (최초 1회, 데이터가 많으면 시간이 걸립니다)'):
+                report_cols = ['받는자', '과목명', '업무']
+                extra_summaries = {
+                    '파견비용': create_full_summary(df_dispatch, group_cols=report_cols),
+                    '매출원가': create_full_summary(df_cost_of_sales, group_cols=report_cols),
+                }
+                cache = {
+                    'token': token,
+                    'excel': to_excel(df, df_dispatch, df_consulting, df_income_team3,
+                                      df_income_team2, df_export, df_cost_of_sales,
+                                      df_import_team1, config),
+                    'html': to_html(summaries, config, extra_summaries=extra_summaries),
+                }
+                st.session_state.artifacts = cache
+
         with col_dl1:
-            excel_data = to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1, config)
             st.download_button(
                 label="엑셀 파일 다운로드",
-                data=excel_data,
+                data=cache['excel'],
                 file_name=f"월정산_결과_{base_name}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch"
             )
 
         with col_dl2:
-            report_cols = ['받는자', '과목명', '업무']
-            extra_summaries = {
-                '파견비용': create_full_summary(df_dispatch, group_cols=report_cols),
-                '매출원가': create_full_summary(df_cost_of_sales, group_cols=report_cols),
-            }
-            html_report = to_html(summaries, config, extra_summaries=extra_summaries)
             st.download_button(
                 label="HTML 보고서 다운로드",
-                data=html_report,
+                data=cache['html'],
                 file_name=f"월정산_보고서_{base_name}.html",
                 mime="text/html",
                 width="stretch"
