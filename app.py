@@ -5,6 +5,7 @@ import json
 import os
 import openpyxl
 from openpyxl.styles import PatternFill, Font
+from openpyxl.utils import get_column_letter
 import plotly.express as px
 from jinja2 import Template
 from datetime import datetime
@@ -310,6 +311,22 @@ def process_data(file, config):
     # 6순위: 수입1팀 (나머지)
     df_import_team1 = df_rem
 
+    # --- 파견비용 누락 의심 감지 ---
+    # B/L No에 '파견'/'용역'이 있는데 파견비용으로 분류되지 않은 행을 찾아 경고.
+    # 담당자가 B/L 표기를 바꾸면(예: '파견비용청구-' → '파견비용-') 키워드가 빗나가
+    # 매출원가 등으로 새어나가는 사고를 막기 위한 안전망.
+    if 'B/L No' in df.columns:
+        suspect_mask = df['B/L No'].astype(str).str.contains('파견|용역', na=False)
+        missed = df[suspect_mask & ~df.index.isin(df_dispatch.index)]
+        if not missed.empty:
+            bl_list = ', '.join(missed['B/L No'].astype(str).head(10).tolist())
+            st.warning(
+                f"⚠️ 파견비용 누락 의심 {len(missed)}건 "
+                f"({missed['공급가'].sum():,.0f}원) — B/L No에 '파견' 또는 '용역'이 있으나 "
+                f"현재 키워드({', '.join(dispatch_keywords) or '없음'})와 맞지 않아 다른 부서로 분류되었습니다. "
+                f"해당 B/L: {bl_list}"
+            )
+
     return df, df_dispatch, df_consulting, df_income_team3, df_income_team2, df_export, df_cost_of_sales, df_import_team1
 
 
@@ -440,9 +457,12 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
         gulim_bold = Font(name='굴림', size=9, bold=True)
         red_bold = Font(name='굴림', size=9, bold=True, color='FF0000')
 
-        def cell_width(value):
+        def cell_width(text):
             # 한글/한자 2칸 폭 근사
-            return sum(2 if ord(ch) > 0x2E80 else 1 for ch in str(value))
+            return sum(2 if ord(ch) > 0x2E80 else 1 for ch in text)
+
+        # 열너비는 상위 행 샘플로 충분 — 수천 행 전체를 재면 과도하게 느려짐
+        WIDTH_SCAN_ROWS = 300
 
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
@@ -456,15 +476,18 @@ def to_excel(df, df_dispatch, df_consulting, df_income_team3, df_income_team2, d
                 ws.cell(row=1, column=supply_col, value=total_val)
 
             col_widths = {}
-            for row in ws.iter_rows():
+            for r_idx, row in enumerate(ws.iter_rows(), start=1):
+                scan_width = r_idx <= WIDTH_SCAN_ROWS
                 for cell in row:
                     cell.font = gulim_font
-                    if cell.value is not None and str(cell.value) != '':
-                        w = cell_width(cell.value)
-                        if w > col_widths.get(cell.column_letter, 0):
-                            col_widths[cell.column_letter] = w
-            for letter, w in col_widths.items():
-                ws.column_dimensions[letter].width = min(max(w + 2, 8), 45)
+                    if scan_width and cell.value is not None:
+                        text = str(cell.value)
+                        if text:
+                            w = cell_width(text)
+                            if w > col_widths.get(cell.column, 0):
+                                col_widths[cell.column] = w
+            for col_idx, w in col_widths.items():
+                ws.column_dimensions[get_column_letter(col_idx)].width = min(max(w + 2, 8), 45)
 
             ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
 
